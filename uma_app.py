@@ -15,7 +15,6 @@ df = pd.concat(df_list, ignore_index=True)
 st.sidebar.header("分析条件の設定")
 view_mode = st.sidebar.radio("表示モード", ["PC表示", "モバイル表示"])
 
-# セレクトボックス（「-」＝指定なし）を追加
 surface_options   = ["-"] + list(df["芝・ダ"].dropna().unique())
 place_options     = ["-"] + list(df["競馬場"].dropna().unique())
 condition_options = ["-"] + list(df["馬場状態"].dropna().unique())
@@ -26,7 +25,9 @@ place     = st.sidebar.selectbox("競馬場", place_options)
 condition = st.sidebar.selectbox("馬場状態", condition_options)
 distance  = st.sidebar.selectbox("距離", distance_options)
 
-# フィルタ処理（「-」なら無視）
+# 最小出走数
+min_runs = st.sidebar.number_input("最小出走数（この回数未満は複勝率・印を()付きで表示）", min_value=1, max_value=50, value=3)
+
 df["着順"] = pd.to_numeric(df["着順"], errors="coerce")
 filtered = df.copy()
 if surface != "-":
@@ -95,26 +96,50 @@ if upload_file:
         sire = row["種牡馬"]
         dam = row["母父馬"]
 
-        sire_rate = sire_stats.loc[sire_stats["種牡馬"] == sire, "複勝率"]
-        dam_rate = dam_stats.loc[dam_stats["母父馬"] == dam, "複勝率"]
+        # サンプル数取得
+        sire_row = sire_stats[sire_stats["種牡馬"] == sire]
+        dam_row = dam_stats[dam_stats["母父馬"] == dam]
+        sire_count = int(sire_row["出走数"].values[0]) if not sire_row.empty else 0
+        dam_count  = int(dam_row["出走数"].values[0]) if not dam_row.empty else 0
 
-        sire_val = float(sire_rate.values[0]) if not sire_rate.empty else None
-        dam_val  = float(dam_rate.values[0]) if not dam_rate.empty else None
+        sire_val = float(sire_row["複勝率"].values[0]) if not sire_row.empty else None
+        dam_val  = float(dam_row["複勝率"].values[0]) if not dam_row.empty else None
 
-        if sire_val is not None and dam_val is not None:
-            return round((sire_val + dam_val) / 2, 1)
-        elif sire_val is not None:
-            return round(sire_val, 1)
-        elif dam_val is not None:
-            return round(dam_val, 1)
+        rates = []
+        counts = []
+        if sire_val is not None:
+            rates.append(sire_val)
+            counts.append(sire_count)
+        if dam_val is not None:
+            rates.append(dam_val)
+            counts.append(dam_count)
+
+        if rates:
+            avg = round(sum(rates) / len(rates), 1)
+            min_sample = min(counts)
+            # サンプル数未満なら()付きで返す
+            if min_sample < min_runs:
+                return f"({avg})"
+            else:
+                return avg
         else:
-            return 0.0
+            return "-"
 
     def get_mark(avg_rate):
-        for mark, threshold in sorted(rank_uma.items(), key=lambda x: -x[1]):
-            if avg_rate >= threshold:
-                return mark
-        return ""
+        # avg_rateが(50.0)など()付きなら印も()付き
+        if isinstance(avg_rate, str) and avg_rate.startswith("(") and avg_rate.endswith(")"):
+            rate = float(avg_rate.strip("()"))
+            for mark, threshold in sorted(rank_uma.items(), key=lambda x: -x[1]):
+                if rate >= threshold:
+                    return f"({mark})"
+            return ""
+        elif avg_rate == "-":
+            return ""
+        else:
+            for mark, threshold in sorted(rank_uma.items(), key=lambda x: -x[1]):
+                if avg_rate >= threshold:
+                    return mark
+            return ""
 
     race_df["複勝率"] = race_df.apply(get_avg_rate, axis=1)
     race_df["印"] = race_df["複勝率"].apply(get_mark)
@@ -125,19 +150,20 @@ if upload_file:
     display_cols = used_cols + ["複勝率", "印"]
     race_display = race_df[display_cols]
 
-    # --- 分析条件をコメント行で作成 ---
+    # 分析条件をコメント行で作成
     analysis_info = (
         f"# 分析条件\n"
         f"# 芝・ダート: {surface}\n"
         f"# 競馬場: {place}\n"
         f"# 馬場状態: {condition}\n"
         f"# 距離: {distance}\n"
+        f"# 最小出走数: {min_runs}\n"
     )
 
-    # --- CSV本体を文字列化 ---
+    # CSV本体を文字列化
     csv_data = race_display.to_csv(index=False, encoding="cp932")
 
-    # --- 分析条件 + 本体を結合 ---
+    # 分析条件 + 本体を結合
     csv_with_info = analysis_info + csv_data
 
     st.markdown(f"""
@@ -146,6 +172,7 @@ if upload_file:
     - 競馬場: {place}
     - 馬場状態: {condition}
     - 距離: {distance}
+    - 最小出走数: {min_runs}
     """)
 
     st.subheader("出走馬への印（複勝率付き）")
